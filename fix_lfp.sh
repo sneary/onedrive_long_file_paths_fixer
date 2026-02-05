@@ -143,10 +143,24 @@ if [[ "$DO_MOVE" == "true" ]]; then
     LFP_DIR="$HOME/LFP"
     [[ -d "$LFP_DIR" ]] || mkdir -p "$LFP_DIR"
     
+    TOTAL_FILES=${#LONG_FILES[@]}
+    CURRENT_INDEX=0
+    
     for path in "${LONG_FILES[@]}"; do
+        ((CURRENT_INDEX++))
+        PCT=$(( 100 * CURRENT_INDEX / TOTAL_FILES ))
+        
+        # Build 20-char bar
+        BAR_WIDTH=20
+        FILLED=$(( PCT * BAR_WIDTH / 100 ))
+        BAR="["
+        for ((i=0; i<FILLED; i++)); do BAR+="="; done
+        for ((i=FILLED; i<BAR_WIDTH; i++)); do BAR+=" "; done
+        BAR+="]"
+
         # Check if file still exists (it might have been moved if it was inside a moved directory)
         if [[ ! -e "$path" ]]; then
-            echo "Skipping (already moved/gone): $path"
+            echo "$BAR $PCT% Skipping (already moved/gone): $path"
             continue
         fi
 
@@ -158,14 +172,40 @@ if [[ "$DO_MOVE" == "true" ]]; then
         
         NEW_PATH="$LFP_DIR/$REL_PATH"
         
-        echo "Moving: .../$REL_PATH"
-        
-        mkdir -p "$(dirname "$NEW_PATH")"
-        
-        rsync -a --remove-source-files "$path" "$NEW_PATH"
+        echo "$BAR $PCT% Moving: .../$REL_PATH"
         
         if [[ -d "$path" ]]; then
-             rmdir "$path" 2>/dev/null
+            # Directory: Create dest and remove source if empty
+            mkdir -p "$NEW_PATH"
+            rmdir "$path" 2>/dev/null
+        else
+            # File: Copy and remove with retry
+            mkdir -p "$(dirname "$NEW_PATH")"
+            
+            COPIED=false
+            MAX_RETRIES=5
+            DELAY=2
+            
+            for (( i=1; i<=MAX_RETRIES; i++ )); do
+                if cp -p "$path" "$NEW_PATH" 2>/dev/null; then
+                    COPIED=true
+                    break
+                else
+                    echo "" # Newline after progress bar
+                    echo "  Attempt $i/$MAX_RETRIES failed. Retrying in ${DELAY}s..." >&2
+                    sleep $DELAY
+                    DELAY=$((DELAY * 2))
+                fi
+            done
+
+            if [[ "$COPIED" == "true" ]]; then
+                rm -f "$path"
+                # "Poke" OneDrive by touching the parent folder
+                touch "$(dirname "$path")" 2>/dev/null
+            else
+                echo "" # Newline after progress bar
+                echo "Failed to copy after $MAX_RETRIES attempts: $path" >&2
+            fi
         fi
     done
     
